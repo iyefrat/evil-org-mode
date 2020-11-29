@@ -210,7 +210,8 @@ Optional argument ARGUMENTS arguments to pass to FUN."
   (while (org-up-heading-safe)))
 
 (evil-define-motion evil-org-end-of-line (&optional n)
-  "Like evil-org-end-of-line but makes org-special-ctrl-a work in evil."
+  "Like org-end-of-line but respects `evil-respect-visual-line-mode'.
+makes org-special-ctrl-a/e work as well."
   (when (and org-special-ctrl-a/e
              evil-move-cursor-back
              (not evil-move-beyond-eol)
@@ -218,9 +219,94 @@ Optional argument ARGUMENTS arguments to pass to FUN."
              (not (invisible-p (line-end-position)))
              (= (point) (1- (line-end-position))))
     (forward-char))
-  (org-end-of-line n))
+  (if evil-respect-visual-line-mode
+      (org-end-of-line n)
+    (let ((origin (point))
+	  (special (pcase org-special-ctrl-a/e
+		     (`(,_ . ,C-e) C-e) (_ org-special-ctrl-a/e)))
+	  deactivate-mark)
+      ;; First move to a visible line.
+      (move-beginning-of-line n)
+      (cond
+       ;; At a headline, with tags.
+       ((and special
+	     (save-excursion
+	       (beginning-of-line)
+	       (let ((case-fold-search nil))
+	         (looking-at org-complex-heading-regexp)))
+	     (match-end 5))
+        (let ((tags (save-excursion
+		      (goto-char (match-beginning 5))
+		      (skip-chars-backward " \t")
+		      (point)))
+	      (end
+	       (save-excursion
+		 (end-of-line)
+		 (point))))
+	  ;; If `end-of-line' brings us before end of line or
+	  ;; even tags, i.e., the headline spans over multiple visual
+	  ;; lines, move there.
+	  (cond
+	   ((eq special 'reversed)
+	    (if (and (= origin (line-end-position))
+		     (eq this-command last-command))
+		(goto-char tags)
+	      (end-of-line)))
+	   (t
+	    (if (or (< origin tags) (= origin (line-end-position)))
+		(goto-char tags)
+	      (end-of-line))))))
+       (t (end-of-line))))))
 
-(defalias 'evil-org-beginning-of-line #'org-beginning-of-line)
+(evil-define-motion evil-org-beginning-of-line (&optional n)
+  "Like org-end-of-line but respects `evil-respect-visual-line-mode'.
+makes org-special-ctrl-a/e work as well."
+  (if (not evil-respect-visual-line-mode)
+      (org-beginning-of-line n)
+    (let ((origin (point))
+	  (special (pcase org-special-ctrl-a/e
+		     (`(,C-a . ,_) C-a) (_ org-special-ctrl-a/e)))
+	  deactivate-mark)
+      ;; First move to a visible line.
+      (move-beginning-of-line n)
+      ;; `move-beginning-of-line' may leave point after invisible
+      ;; characters if line starts with such of these (e.g., with
+      ;; a link at column 0).  Really move to the beginning of the
+      ;; current visible line.
+      (beginning-of-line)
+    (cond
+     ;; No special behavior.  Point is already at the beginning of
+     ;; a line, logical or visual.
+     ((not special))
+     ((let ((case-fold-search nil)) (looking-at org-complex-heading-regexp))
+      ;; At a headline, special position is before the title, but
+      ;; after any TODO keyword or priority cookie.
+      (let ((refpos (min (1+ (or (match-end 3) (match-end 2) (match-end 1)))
+			 (line-end-position)))
+	    (bol (point)))
+	(if (eq special 'reversed)
+	    (when (and (= origin bol) (eq last-command this-command))
+	      (goto-char refpos))
+	  (when (or (> origin refpos) (= origin bol))
+	    (goto-char refpos)))))
+     ((and (looking-at org-list-full-item-re)
+	   (memq (org-element-type (save-match-data (org-element-at-point)))
+		 '(item plain-list)))
+      ;; Set special position at first white space character after
+      ;; bullet, and check-box, if any.
+      (let ((after-bullet
+	     (let ((box (match-end 3)))
+	       (cond ((not box) (match-end 1))
+		     ((eq (char-after box) ?\s) (1+ box))
+		     (t box)))))
+	(if (eq special 'reversed)
+	    (when (and (= (point) origin) (eq last-command this-command))
+	      (goto-char after-bullet))
+	  (when (or (> origin after-bullet) (= (point) origin))
+	    (goto-char after-bullet)))))
+     ;; No special context.  Point is already at beginning of line.
+     (t nil)))))
+
 
 ;;; insertion commands
 (defun evil-org-insert-line (count)
@@ -765,28 +851,28 @@ Includes tables, list items and subtrees."
   (let-alist evil-org-movement-bindings
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" .left)) (lambda () (interactive)
-                    (org-eval-in-calendar '(calendar-backward-day 1))))
+                                  (org-eval-in-calendar '(calendar-backward-day 1))))
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" .right)) (lambda () (interactive)
-                    (org-eval-in-calendar '(calendar-forward-day 1))))
+                                   (org-eval-in-calendar '(calendar-forward-day 1))))
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" .up)) (lambda () (interactive)
-                    (org-eval-in-calendar '(calendar-backward-week 1))))
+                                (org-eval-in-calendar '(calendar-backward-week 1))))
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" .down)) (lambda () (interactive)
-                    (org-eval-in-calendar '(calendar-forward-week 1))))
+                                  (org-eval-in-calendar '(calendar-forward-week 1))))
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" (capitalize .left))) (lambda () (interactive)
-                      (org-eval-in-calendar '(calendar-backward-month 1))))
+                                               (org-eval-in-calendar '(calendar-backward-month 1))))
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" (capitalize .right))) (lambda () (interactive)
-                      (org-eval-in-calendar '(calendar-forward-month 1))))
+                                                (org-eval-in-calendar '(calendar-forward-month 1))))
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" (capitalize .up))) (lambda () (interactive)
-                      (org-eval-in-calendar '(calendar-backward-year 1))))
+                                             (org-eval-in-calendar '(calendar-backward-year 1))))
     (define-key org-read-date-minibuffer-local-map
       (kbd (concat "M-" (capitalize .down))) (lambda () (interactive)
-                      (org-eval-in-calendar '(calendar-forward-year 1))))))
+                                               (org-eval-in-calendar '(calendar-forward-year 1))))))
 
 (defun evil-org-set-key-theme (&optional theme)
   "Select what keythemes to enable.
